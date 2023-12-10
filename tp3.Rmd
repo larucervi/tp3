@@ -1,0 +1,183 @@
+---
+title: "tp3"
+author: "Lara"
+date: "2023-10-25"
+output: html_document
+---
+
+#Familias en Barrios Populares 
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(sf)
+library(janitor)
+library(geoAr)
+library(leaflet)
+```
+
+A partir de la informción revisada en los últimos trabajos, surge la necesidad de investigar la situación  habitacional crítica, dada la complejidad que presenta en nuestro país. 
+
+Para ello, se tomará se ahondará en la situación de los barrios populares dentro de las principales ciudades del país. En este sentido, se tomarán las capitales como principal muestra.  
+
+Esto tiene como objetivo observar donde se encuentran localizadas las situaciones urbanas más críticas con e fin de apuntalar los esfuerzos allí. 
+
+Para ello se extrae la base publicada por el ReNaBap de 2022:
+
+1. Bases
+```{r}
+renabap22 <- read_sf("https://datosabiertos.desarrollosocial.gob.ar/dataset/0d022767-9390-486a-bff4-ba53b85d730e/resource/97cc7d10-ad4c-46cb-9ee4-becb402adf9f/download/2023-09-20_info_publica.geojson")
+```
+
+Seleccionamos las localidades correspondientes a las capitales provinciales. 
+
+```{r}
+cap_renabap <- renabap22 %>% 
+  mutate(capitales = paste(provincia,
+                           departamento,
+                           sep = "-"),
+         capitales = case_when(str_detect(capitales, "^Ciudad Autónoma de Buenos Aires-") ~ "Ciudad Autónoma de Buenos Aires",
+                               T ~ capitales)) %>% 
+  
+  filter(capitales  %in% c("Buenos Aires-La Plata",
+                           "Ciudad Autónoma de Buenos Aires",
+                           
+                           "Tierra del Fuego-Ushuaia", 
+                           "Santa Cruz-Güer Aike",
+                           "Chubut-Biedma",
+                           "Río Negro-Adolfo Alsina",
+                           "Neuquén-Confluencia", 
+                           "La Pampa-Santa Rosa",
+                           
+                           "Mendoza-Capital",
+                           "San Juan-Capital",
+                           "La Rioja-Capital", 
+                           "San Luis-Juan Martín de Pueyrredón",
+                           
+                           "Córdoba-Capital",
+                           "Santa Fe-La Capital",
+                           "Entre Ríos-Paraná",
+                           
+                           "Misiones-Capital",
+                           "Chaco-San Fernando",
+                           "Formosa-Formosa",
+                           "Corrientes-Capital",
+                           
+                           "Catamarca-Capital", 
+                           "Salta-Capital",
+                           "Tucumán-Capital",
+                           "Santiago del Estero-Capital", 
+                           "Jujuy-Dr. Manuel Belgrano"))
+```
+
+```{r}
+capitales<- cap_renabap %>% 
+  st_set_geometry(NULL) %>% 
+  group_by(capitales) %>%
+  summarise(total_familias = sum(cantidad_familias_aproximada, na.rm = T)) %>% 
+  arrange(-total_familias)
+```
+
+Como era esperado, los mayores centros urbanos como CABA y el GBA tienen una mayor cantidad total de familias. Sin embargo, le sigue el centro urbano de Chaco-San Fernando. Este hallazgo dispara la pregunta sobre la comparabilidad de las ciudades según el tamaño que poseen. Para evaluar de manera más proporcional la cantidad de familias según la cantidad de población total de la región, se va a proceder a estandarizar esta relación para todas las capitales y evaluar cuál tiene mayor proporción de familias en barrios populares. 
+
+Esto se espera a que ayude a explorar las ciudades donde mayor cantidad poblacional se encuentra en situación crítica y requiera mayores esfuerzos integrales por parte de la sociedad y el Estado para solucionarlo. 
+
+2. Subir base de población y unirla al dataset:
+
+```{r}
+poblacion <- openxlsx::read.xlsx("data/poblacion.xlsx")
+```
+
+```{r}
+poblacion <- poblacion %>%
+  clean_names()
+```
+
+```{r}
+poblacion <- poblacion %>% 
+    mutate(direccion = paste(nombre_de_provincia,
+                          nombre_de_departamento_2010_por_departamento,
+                           sep = "-"),
+           direccion = case_when(str_detect(direccion, "^Ciudad Autónoma de Buenos Aires-") ~ "Ciudad Autónoma de Buenos Aires",
+                               T ~ direccion),
+           direccion = recode(direccion,
+         "Tierra del Fuego, Antártida e Islas del Atlántico Sur-Ushuaia" = "Tierra del Fuego-Ushuaia",
+         "San Luis-La Capital"="San Luis-Juan Martín de Pueyrredón")) %>% 
+  select(direccion, poblacion_2022_por_departamento, codigo_de_departamento_2010_por_departamento) %>% 
+  group_by(direccion) %>% 
+  summarise(total_poblacion = sum(poblacion_2022_por_departamento, na.rm = T),
+            codigo = first(codigo_de_departamento_2010_por_departamento))
+  
+```
+
+```{r}
+capitales_poblacion <- capitales %>% 
+  left_join(poblacion, by=c("capitales" = "direccion")) 
+```
+
+```{r}
+capitales_poblacion <- capitales_poblacion %>% 
+  mutate(prop = total_familias/total_poblacion*100)
+```
+
+A partir de la tabla formada, podemos mostrar cuales son las ciudades con mayor proporción de familias en barrios populares. 
+
+Para ello cargamos la geometría de las ciudades y unificamos la información recabada para que sea mostrada. 
+```{r}
+arg_geo <- get_geo(geo = "ARGENTINA",
+                   level = "departamento", simplified = F) %>% 
+  mutate(codigo = paste0(codprov_censo,
+                        coddepto_censo))
+```
+
+```{r}
+arg_geo <- arg_geo %>% 
+  left_join(capitales_poblacion, by = "codigo") %>% 
+  filter(!is.na(capitales))
+  
+capitales_poblacion <- capitales_poblacion %>% 
+  left_join(arg_geo, by = "codigo")
+```
+
+Lo que me interesa es mostrarlo a nivel punto (centroides) para una mejor visualización:
+```{r}
+centroides <- arg_geo %>% 
+  st_centroid()
+```
+```{r}
+argentina <- get_geo(geo = "ARGENTINA",
+                     level = "provincia", simplified = F)
+```
+
+A través de este codigo, se busca una visualización limpia del país, y a su vez:
+- un gradiente de color que destaque la mayor proporción de familias por ciudad
+- un gradiente de tamaño entre las ciudades que refiera al tamaño real de las ciudades.
+
+```{r}
+ggplot() +
+  geom_sf(data = argentina, fill = "white", color = "grey70") +
+  geom_sf(data = centroides, aes(color = prop, size = total_poblacion), alpha = 0.9) +
+  scale_color_gradient(low = "orange", high = "brown", name = "Proporción Familias-Población") +
+  scale_size_continuous(
+    name = "Total Poblacion",
+    range = c(1.2, 4.2),
+    labels = scales::comma_format(accuracy = 1),
+    limits = c(60000, 3120612), 
+    breaks = c(60000, 500000, 1000000, 3120612)
+  ) +
+  theme_void() +
+  theme(
+    legend.text = element_text(size = 6),
+    plot.title = element_text(size = 6),
+    axis.title = element_text(size = 6),
+    legend.title = element_text(size = 6)
+  ) +
+  guides(
+    size = guide_legend(title = "Total Poblacion", label.theme = element_text(size = 6))
+  )
+```
+##Conclusiones
+A partir de esta visualización, podemos observar que de manera general las ciudades ubicadas en el Noreste argentino (NEA) presentan una situación mucho más crítica que los principales centros urbanos del país (como CABA o Córdoba). 
+
+Este tipo de hallazgos se plasman sobre la conocida dificultad socioeconómica en dicha región  del país, y permiten disparar nuevas líneas de investigación sobre cuáles son las estructuras de desarrollo económico que generan las notables diferencias regionales. 
+
+Estos hallazgos deben interpretarse  a la luz de los trabajos anteriores, donde la condicion habitacional era inversamente proporcional a la tenencia propia de las viviendas. En este sentido, se concluye que se debe avanzar en la materia especialmente en ciudades que denotan una mayor concentración de estos problemas y ayudar así a avanzar en el desarrollo humano de la población. 
